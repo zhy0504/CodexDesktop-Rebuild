@@ -145,7 +145,12 @@ async function getWindowsVersion() {
   if (!info.categoryId) throw new Error("No CategoryID");
   const pkgs = await msstore.getFileList(cookie, info.categoryId, "Retail");
   if (pkgs.length === 0) throw new Error("No packages");
-  const pkg = pkgs[0];
+  const pkg = msstore.findPackageByArchitecture(pkgs, "x64");
+  if (!pkg) {
+    const available = pkgs.map((candidate) => candidate.name).join(", ");
+    throw new Error(`No Windows x64 package found. Available packages: ${available}`);
+  }
+  console.log(`   selected Windows package: ${pkg.name}`);
   const url = await msstore.getDownloadUrl(pkg.updateID, pkg.revisionNumber, "Retail", pkg.digest);
   const verMatch = pkg.name.match(/_(\d+\.\d+\.\d+(?:\.\d+)?)_/);
   return { version: verMatch?.[1] || "unknown", url, packageName: pkg.name };

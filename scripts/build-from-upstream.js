@@ -116,13 +116,18 @@ function buildMac(platform) {
   const variant = platform === "mac-arm64" ? "arm64" : "x64";
   const extractDir = path.join(tempDir, `${variant}-extract`);
 
-  // Find Codex.app
+  // The upstream bundle was renamed from Codex.app to ChatGPT.app in July 2026.
+  // Match by bundle structure so future product renames do not break packaging.
   let appPath = null;
   if (fs.existsSync(extractDir)) {
     const findApp = (dir) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (e.name === "Codex.app" && e.isDirectory()) return path.join(dir, e.name);
-        if (e.isDirectory()) { const r = findApp(path.join(dir, e.name)); if (r) return r; }
+        if (!e.isDirectory()) continue;
+        const candidate = path.join(dir, e.name);
+        const appAsar = path.join(candidate, "Contents", "Resources", "app.asar");
+        if (e.name.endsWith(".app") && fs.existsSync(appAsar)) return candidate;
+        const nested = findApp(candidate);
+        if (nested) return nested;
       }
       return null;
     };
@@ -130,7 +135,7 @@ function buildMac(platform) {
   }
 
   if (!appPath) {
-    console.error(`[x] Codex.app not found in cache. Run sync-upstream first.`);
+    console.error(`[x] macOS app bundle not found in cache. Run sync-upstream first.`);
     process.exit(1);
   }
 

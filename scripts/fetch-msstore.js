@@ -346,6 +346,12 @@ async function getFileList(cookie, categoryId, ring) {
   return updates;
 }
 
+function findPackageByArchitecture(packages, arch) {
+  const escapedArch = String(arch).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(?:^|_)${escapedArch}(?:_|\\.|$)`, "i");
+  return packages.find((pkg) => pattern.test(pkg.name));
+}
+
 async function getDownloadUrl(updateID, revisionNumber, ring, digest) {
   const soap = makeGetUrlSoap(updateID, revisionNumber, ring);
   const res = await soapPost(
@@ -614,7 +620,7 @@ async function main() {
 }
 
 // 支持作为模块导入
-module.exports = { getCookie, getAppInfo, getFileList, getDownloadUrl };
+module.exports = { getCookie, getAppInfo, getFileList, findPackageByArchitecture, getDownloadUrl };
 
 // CLI 直接运行
 if (require.main === module) {

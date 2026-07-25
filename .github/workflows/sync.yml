@@ -11,7 +11,7 @@ on:
         default: false
 
 env:
-  NODE_VERSION: "24"
+  NODE_VERSION: "22"
 
 jobs:
   check:
@@ -158,7 +158,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm fakeroot dpkg 7zip
+          sudo apt-get install -y rpm fakeroot dpkg 7zip build-essential python3 libudev-dev
 
       - name: Install dependencies
         run: |
