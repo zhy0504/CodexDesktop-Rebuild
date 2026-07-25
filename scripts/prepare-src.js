@@ -130,6 +130,25 @@ function resolveRgVendor(platform) {
   return fs.existsSync(p) ? p : null;
 }
 
+function resolveForgeMain(upstream, isLinux) {
+  if (!isLinux) return "src/.vite/build/bootstrap.js";
+
+  if (typeof upstream.main !== "string" || !upstream.main.trim()) {
+    throw new Error("Upstream package.json does not define a main entry");
+  }
+
+  const normalized = upstream.main
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "");
+
+  if (path.posix.isAbsolute(normalized) || normalized.split("/").includes("..")) {
+    throw new Error(`Invalid upstream main entry: ${upstream.main}`);
+  }
+
+  return normalized.startsWith("src/") ? normalized : `src/${normalized}`;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const platIdx = args.indexOf("--platform");
@@ -221,7 +240,15 @@ function main() {
     const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, "utf-8"));
     const oldVer = rootPkg.version;
     rootPkg.version = upstream.version || rootPkg.version;
-    rootPkg.main = "src/.vite/build/bootstrap.js";
+    rootPkg.main = resolveForgeMain(upstream, isLinux);
+
+    if (isLinux) {
+      const mainPath = path.join(PROJECT_ROOT, ...rootPkg.main.split("/"));
+      if (!fs.existsSync(mainPath)) {
+        throw new Error(`Upstream main entry not found after preparing src/: ${rootPkg.main}`);
+      }
+    }
+
     for (const key of [
       "codexBuildNumber", "codexBuildFlavor",
       "codexSparkleFeedUrl", "codexSparklePublicKey",
@@ -232,6 +259,7 @@ function main() {
     }
     fs.writeFileSync(rootPkgPath, JSON.stringify(rootPkg, null, 2) + "\n");
     console.log(`   version: ${oldVer} -> ${rootPkg.version}`);
+    console.log(`   main: ${rootPkg.main}`);
   }
 
   // For mac/win: create stub main entry so forge validation passes.
@@ -255,4 +283,6 @@ function main() {
   console.log(`   [ok] src/ ready for ${platform} build`);
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { resolveForgeMain };
