@@ -10,6 +10,13 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   NODE_VERSION: "22"
 
@@ -31,21 +38,37 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run tests
+        run: npm test
+
       - name: Check upstream versions
         id: detect
         run: |
-          set +e
-          node scripts/check-update.js --json --force 2>&1
-          exit_code=$?
-          set -e
+          RESULT="$(node scripts/check-update.js --json --force)"
+          echo "$RESULT" > /tmp/codex-version-check.json
 
-          if [ "${{ inputs.force }}" = "true" ]; then
+          HAS_UPDATE="$(node -e "
+            const fs = require('fs');
+            const result = JSON.parse(fs.readFileSync('/tmp/codex-version-check.json', 'utf8'));
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const normalize = (version) => String(version || '').replace(/\\.0$/, '');
+            const current = normalize(pkg.version);
+            const versions = Object.values(result.platforms || {})
+              .map((platform) => normalize(platform?.version))
+              .filter(Boolean);
+            if (versions.length === 0) throw new Error('Upstream version check returned no platforms');
+            process.stdout.write(versions.some((version) => version !== current) ? 'true' : 'false');
+          ")"
+
+          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.force }}" = "true" ]; then
             echo "has_update=true" >> "$GITHUB_OUTPUT"
-          elif [ $exit_code -eq 0 ]; then
+            echo "Manual force sync requested."
+          elif [ "$HAS_UPDATE" = "true" ]; then
             echo "has_update=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream update detected."
           else
             echo "has_update=false" >> "$GITHUB_OUTPUT"
-            echo "No upstream update detected."
+            echo "No upstream update detected. Current package.json version already matches upstream."
           fi
 
   # ──────────────────────────────────────────────
@@ -149,6 +172,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Free disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h /
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
@@ -187,8 +219,13 @@ jobs:
   # Bump version + tag + release
   # ──────────────────────────────────────────────
   release:
-    needs: [build-mac, build-windows, build-linux]
-    if: always() && needs.check.result == 'success'
+    needs: [check, build-mac, build-windows, build-linux]
+    if: >-
+      always() &&
+      needs.check.result == 'success' &&
+      needs.check.outputs.has_update == 'true' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     permissions:
       contents: write

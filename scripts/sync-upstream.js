@@ -22,6 +22,11 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
+const {
+  parseWindowsPackageName,
+  selectWindowsPackage,
+  validateWindowsPackage,
+} = require("./windows-package");
 
 // TLS certs for MS delivery CDN
 const certsDir = path.join(__dirname, "certs");
@@ -70,18 +75,50 @@ function extractArchive(archive, dest) {
   if (process.platform === "darwin" && archive.endsWith(".zip")) {
     // ditto preserves macOS symlinks + resource forks (required for .app)
     execSync(`ditto -xk "${archive}" "${dest}"`);
+    decodePercentNames(dest);
   } else {
     // 7zz for Windows MSIX and Linux (symlinks don't matter — only ASAR content used)
     for (const bin of ["7zz", "7z"]) {
+      clearDir(dest);
       try {
         execSync(`${bin} x -y -o"${dest}" "${archive}"`, { stdio: "pipe" });
+        decodePercentNames(dest);
         return;
       } catch {
-        if (fs.readdirSync(dest).length > 0) return;
+        decodePercentNames(dest);
+        if (findFile(dest, "app.asar")) {
+          console.log(`   [extract] ${bin} exited non-zero, but app.asar is available`);
+          return;
+        }
       }
     }
     throw new Error(`Failed to extract ${archive}`);
   }
+}
+
+function decodePercentNames(root) {
+  if (!fs.existsSync(root)) return;
+
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const current = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(current);
+      if (!/%[0-9a-fA-F]{2}/.test(entry.name)) continue;
+
+      let decoded;
+      try {
+        decoded = decodeURIComponent(entry.name);
+      } catch {
+        continue;
+      }
+      if (!decoded || decoded === entry.name || /[\\/:*?"<>|\0]/.test(decoded)) continue;
+
+      const target = path.join(dir, decoded);
+      if (!fs.existsSync(target)) fs.renameSync(current, target);
+    }
+  };
+
+  walk(root);
 }
 
 function findFile(dir, name) {
@@ -144,16 +181,17 @@ async function getWindowsVersion() {
   const info = await msstore.getAppInfo("9plm9xgg6vks", "US");
   if (!info.categoryId) throw new Error("No CategoryID");
   const pkgs = await msstore.getFileList(cookie, info.categoryId, "Retail");
-  if (pkgs.length === 0) throw new Error("No packages");
-  const pkg = msstore.findPackageByArchitecture(pkgs, "x64");
-  if (!pkg) {
-    const available = pkgs.map((candidate) => candidate.name).join(", ");
-    throw new Error(`No Windows x64 package found. Available packages: ${available}`);
-  }
+  const pkg = selectWindowsPackage(pkgs, "x64");
+  const packageIdentity = parseWindowsPackageName(pkg.name);
   console.log(`   selected Windows package: ${pkg.name}`);
   const url = await msstore.getDownloadUrl(pkg.updateID, pkg.revisionNumber, "Retail", pkg.digest);
-  const verMatch = pkg.name.match(/_(\d+\.\d+\.\d+(?:\.\d+)?)_/);
-  return { version: verMatch?.[1] || "unknown", url, packageName: pkg.name };
+  if (!url) throw new Error(`No download URL for Windows x64 package: ${pkg.name}`);
+  return {
+    version: packageIdentity.version,
+    url,
+    packageName: pkg.name,
+    architecture: packageIdentity.architecture,
+  };
 }
 
 // ─── Extract macOS ──────────────────────────────────────────────
@@ -187,11 +225,9 @@ async function syncMac(variant, appcastUrl, destDir) {
 
 // ─── Extract Windows ────────────────────────────────────────────
 
-async function syncWin(destDir) {
+async function syncWin(destDir, info) {
   console.log("\n-- Windows");
-
-  const info = await getWindowsVersion();
-  console.log(`   version: ${info.version}`);
+  console.log(`   version: ${info.version} (${info.architecture})`);
 
   const msixPath = path.join(TEMP_DIR, info.packageName || `codex-win-${info.version}.msix`);
   const extractDir = path.join(TEMP_DIR, "win-extract");
@@ -205,6 +241,9 @@ async function syncWin(destDir) {
   console.log("   [unzip]");
   clearDir(extractDir);
   extractArchive(msixPath, extractDir);
+
+  const identity = validateWindowsPackage(extractDir, info);
+  console.log(`   [verify] MSIX ${identity.architecture}, version ${identity.version}`);
 
   const resourcesDir = path.join(extractDir, "app", "resources");
   if (!fs.existsSync(resourcesDir)) {
@@ -291,11 +330,9 @@ async function main() {
   }
 
   if (!SKIP_WIN) {
-    try {
-      const winInfo = await getWindowsVersion();
-      console.log(`   win:       ${winInfo.version}`);
-      results.win = winInfo;
-    } catch (e) { console.error(`   [x] win check: ${e.message}`); }
+    const winInfo = await getWindowsVersion();
+    console.log(`   win-x64:   ${winInfo.version} (${winInfo.packageName})`);
+    results.win = winInfo;
   }
 
   if (CHECK_ONLY) {
@@ -315,9 +352,7 @@ async function main() {
     } catch (e) { console.error(`   [x] mac-x64: ${e.message}`); }
   }
   if (!SKIP_WIN && results.win) {
-    try {
-      results.win = await syncWin(path.join(SRC_DIR, "win"));
-    } catch (e) { console.error(`   [x] win: ${e.message}`); }
+    results.win = await syncWin(path.join(SRC_DIR, "win"), results.win);
   }
 
   const saved = loadVersions();
@@ -332,4 +367,8 @@ async function main() {
   }
 }
 
-main().catch((e) => { console.error(`\n[x] ${e.message}`); process.exit(1); });
+if (require.main === module) {
+  main().catch((e) => { console.error(`\n[x] ${e.message}`); process.exit(1); });
+}
+
+module.exports = { decodePercentNames };

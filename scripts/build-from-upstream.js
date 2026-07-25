@@ -12,7 +12,8 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
+const { validateWindowsPackage } = require("./windows-package");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const SRC_DIR = path.join(PROJECT_ROOT, "src");
@@ -47,6 +48,29 @@ function copyRecursive(src, dest) {
     }
   }
   return count;
+}
+
+function clearExistingAsarUnpacked(asarPath) {
+  fs.rmSync(`${asarPath}.unpacked`, { recursive: true, force: true });
+}
+
+function packAsar(asarDir, asarPath, extraArgs = []) {
+  const asarCli = path.join(PROJECT_ROOT, "node_modules", "@electron", "asar", "bin", "asar.mjs");
+  execFileSync(process.execPath, [asarCli, "pack", asarDir, asarPath, ...extraArgs], {
+    stdio: "pipe",
+  });
+}
+
+function getAsarPackArgs(platform) {
+  if (platform === "win") {
+    return [
+      "--unpack-dir", "{node_modules/better-sqlite3,node_modules/node-pty,node_modules/@worklouder}",
+    ];
+  }
+  return [
+    "--unpack-dir", "{node_modules/better-sqlite3,node_modules/node-pty}",
+    "--unpack", "{**/*.node,**/node-pty/build/Release/*.exe}",
+  ];
 }
 
 function resolveCodexVendor(platform) {
@@ -153,7 +177,8 @@ function buildMac(platform) {
   // 3. Repack patched ASAR
   const asarPath = path.join(resourcesDir, "app.asar");
   console.log("   [asar pack] _asar/ -> app.asar");
-  execSync(`npx asar pack "${asarDir}" "${asarPath}"`);
+  clearExistingAsarUnpacked(asarPath);
+  packAsar(asarDir, asarPath, getAsarPackArgs(platform));
 
   // 4. Update ASAR integrity hash in Info.plist
   const infoPlist = path.join(outApp, "Contents", "Info.plist");
@@ -209,6 +234,14 @@ function buildWin(platform) {
     process.exit(1);
   }
 
+  try {
+    const identity = validateWindowsPackage(extractDir, { architecture: "x64" });
+    console.log(`   [verify] MSIX ${identity.architecture}, version ${identity.version}`);
+  } catch (e) {
+    console.error(`[x] ${e.message}`);
+    process.exit(1);
+  }
+
   // Copy app/ to output
   const outAppDir = path.join(OUT_DIR, "win");
   clearDir(outAppDir);
@@ -225,7 +258,8 @@ function buildWin(platform) {
 
   // Repack patched ASAR
   console.log("   [asar pack] _asar/ -> app.asar");
-  execSync(`npx asar pack "${asarDir}" "${asarPath}"`);
+  clearExistingAsarUnpacked(asarPath);
+  packAsar(asarDir, asarPath, getAsarPackArgs(platform));
 
   // Compute new hash and patch exe
   const newHash = computeAsarHeaderHash(asarPath);
@@ -337,4 +371,6 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { clearExistingAsarUnpacked, getAsarPackArgs, packAsar };

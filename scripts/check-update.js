@@ -17,6 +17,7 @@ const tls = require("tls");
 const { XMLParser } = require("fast-xml-parser");
 const fs = require("fs");
 const path = require("path");
+const { parseWindowsPackageName, selectWindowsPackage } = require("./windows-package");
 
 // ─── 证书注入（复用 fetch-msstore 的 CA 补丁）─────────────────────
 const certsDir = path.join(__dirname, "certs");
@@ -114,13 +115,8 @@ async function checkWindowsVersion() {
   }
 
   // 从包名提取版本: OpenAI.Codex_26.325.2171.0_x64__xxx.msix
-  const pkg = msstore.findPackageByArchitecture(packages, "x64");
-  if (!pkg) {
-    const available = packages.map((candidate) => candidate.name).join(", ");
-    throw new Error(`No Windows x64 package found. Available packages: ${available}`);
-  }
-  const versionMatch = pkg.name.match(/_(\d+\.\d+\.\d+(?:\.\d+)?)_/);
-  const version = versionMatch ? versionMatch[1] : "unknown";
+  const pkg = selectWindowsPackage(packages, "x64");
+  const { version } = parseWindowsPackageName(pkg.name);
 
   // 获取下载链接
   const url = await msstore.getDownloadUrl(
